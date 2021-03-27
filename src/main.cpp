@@ -33,25 +33,27 @@
 
 #include <math.h>
 
- //generated pb interface
+//generated pb interface
 #include <pb_encode.h>
 #include "interface.pb.h"
 
 //Router parameters
-const char* ssid        = "......."; // Enter your WiFi name
-const char* password    =  "......"; // Enter WiFi password
-const char* mqttServer  = "192.168.1.78"; //RPI MQTT Server IP
+const char *ssid = "";                      // Enter your WiFi name
+const char *password = ""; // Enter WiFi password
+const char *mqttServer = ""; //mqtt server ip
 
 //PB variables
 bool status;
 
 // MQTT Topic
-const char* bpmTopic = "/senso-care/sensors/bpm-superesp8266";
+const char *bpmTopic = "/senso-care/sensors/bpm-superesp8266";
 
 //Our two communicating objects in MQTT
 WiFiClient espClient;
 PubSubClient client(espClient);
 
+//PB sent buffer
+uint8_t buffer[sensocare_messages_Measure_size];
 
 MAX30105 particleSensor;
 
@@ -62,35 +64,8 @@ long lastBeat = 0; //Time at which the last beat occurred
 
 float beatsPerMinute;
 int beatAvg;
-//Sent parameters
- void sendSerialised(float value, const char* topic)
-{
-  uint8_t buffer[sensocare_messages_Measure_size];
-  sensocare_messages_Measure measure = sensocare_messages_Measure_init_zero;
-  pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
 
-  //Set protobuf structure values
-  measure.timestamp = (uint64_t) time(NULL);
-  measure.value = value;
 
-//Encoding Measure fields
-  status = pb_encode(&stream, sensocare_messages_Measure_fields, &measure);
-
-  if (!status)
-  {
-    Serial.println("Encoding failed"); // Fail
-  }
-  /*
-  //Prinf buffer in serial monitor
-  for(int i = 0; i < sensocare_messages_Measure_size; i++ )
-  {
-    Serial.print(buffer[i]);
-  }
-  Serial.print(" ");
-  // Envoyer le buffer
-  client.publish(topic, (char*)buffer);
-  */
-}
 void wifiSetup()
 {
   delay(10);
@@ -104,12 +79,12 @@ void wifiSetup()
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
-//We wait until connection is done
-while (WiFi.status() != WL_CONNECTED)
-{
-  delay(500);
-  Serial.print(".");
-}
+  //We wait until connection is done
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
 
   randomSeed(micros());
   Serial.println("");
@@ -117,9 +92,10 @@ while (WiFi.status() != WL_CONNECTED)
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 
-  configTime(2*3600, 0, mqttServer);
+  configTime(2 * 3600, 0, mqttServer);
 }
-void reconnect() {
+void reconnect()
+{
   // Loop until we're reconnected
   while (!client.connected())
   {
@@ -130,13 +106,14 @@ void reconnect() {
     clientId += String(random(0xffff), HEX);
     // Attempt to connect
     if (client.connect(clientId.c_str()))
-     {
+    {
       Serial.println("connected");
       // Once connected, publish an announcement...
       client.publish("outTopic", "hello world");
       // ... and resubscribe
       client.subscribe("inTopic");
-    }else
+    }
+    else
     {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -146,9 +123,45 @@ void reconnect() {
     }
   }
 }
+void sendSerialised(sensocare_messages_Measure measure, const char *topic)
+{
+  memset(buffer, '\0', sensocare_messages_Measure_size);
+  pb_ostream_t stream = pb_ostream_from_buffer(buffer, sensocare_messages_Measure_size);
+  status = pb_encode(&stream, sensocare_messages_Measure_fields, &measure);
+  if (!status)
+  {
+    Serial.println("Encoding failed"); // Fail
+  }
+
+  //Prinf buffer in serial monitor
+  /*for(int i = 0; i < sensocare_messages_Measure_size; i++ )
+  {
+    Serial.print(buffer[i]);
+  }
+  Serial.println(" ");*/
+  // Envoyer le buffer
+  client.publish(topic, (char *)buffer, stream.bytes_written);
+}
+
+void createMessageAndSend(float value, const char *topic)
+{
+  sensocare_messages_Measure measure = sensocare_messages_Measure_init_zero;
+  measure.value.fValue = value;
+  measure.which_value = sensocare_messages_Measure_fValue_tag;
+  sendSerialised(measure, topic);
+}
+void createMessageAndSend(int value, const char *topic)
+{
+  sensocare_messages_Measure measure = sensocare_messages_Measure_init_zero;
+  measure.value.iValue = value;
+  measure.which_value = sensocare_messages_Measure_iValue_tag;
+  sendSerialised(measure, topic);
+}
 void setup()
 {
   Serial.begin(115200);
+  wifiSetup();                        //Connecting to home network
+  client.setServer(mqttServer, 1883); //Setup mqtt server
   Serial.println("Initializing...");
 
   // Initialize sensor
@@ -167,8 +180,12 @@ void setup()
 
 void loop()
 {
-  long irValue = particleSensor.getIR();
 
+  long irValue = particleSensor.getIR();
+  if (!client.connected())
+  {
+    reconnect();
+  }
   if (checkForBeat(irValue) == true)
   {
     //We sensed a beat!
@@ -190,19 +207,23 @@ void loop()
     }
   }
 
+  /*
   Serial.print("IR=");
   Serial.print(irValue);
   Serial.print(", BPM=");
   Serial.print(beatsPerMinute);
   Serial.print(", Avg BPM=");
   Serial.print(beatAvg);
-
+*/
   if (irValue < 50000)
+  {
     Serial.print(" No finger?");
-
+    //Send Value to the dedicated topic
+    
+  }
+  Serial.print(beatAvg);
+  createMessageAndSend(beatAvg, bpmTopic);  
+  
   Serial.println();
-
-  //Send Value to the dedicated topic
-  sendSerialised(beatsPerMinute,bpmTopic); 
-} 
- 
+  delay(500); 
+}
